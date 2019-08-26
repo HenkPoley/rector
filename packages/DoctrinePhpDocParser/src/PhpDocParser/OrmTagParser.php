@@ -5,6 +5,12 @@ namespace Rector\DoctrinePhpDocParser\PhpDocParser;
 use Doctrine\ORM\Mapping\Annotation;
 use Doctrine\ORM\Mapping\Column;
 use Doctrine\ORM\Mapping\Entity;
+use Doctrine\ORM\Mapping\JoinColumn;
+use Doctrine\ORM\Mapping\ManyToMany;
+use Doctrine\ORM\Mapping\ManyToOne;
+use Doctrine\ORM\Mapping\OneToMany;
+use Doctrine\ORM\Mapping\OneToOne;
+use Doctrine\ORM\Mapping\OrderBy;
 use Nette\Utils\Strings;
 use PhpParser\Node;
 use PhpParser\Node\Stmt\Class_;
@@ -14,9 +20,17 @@ use PHPStan\PhpDocParser\Lexer\Lexer;
 use PHPStan\PhpDocParser\Parser\TokenIterator;
 use Rector\Configuration\CurrentNodeProvider;
 use Rector\DoctrinePhpDocParser\AnnotationReader\NodeAnnotationReader;
-use Rector\DoctrinePhpDocParser\Ast\PhpDoc\ColumnTagValueNode;
-use Rector\DoctrinePhpDocParser\Ast\PhpDoc\EntityTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Class_\EntityTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Class_\OrderByTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\ColumnTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\JoinColumnTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\ManyToManyTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\ManyToOneTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\OneToManyTagValueNode;
+use Rector\DoctrinePhpDocParser\Ast\PhpDoc\Property_\OneToOneTagValueNode;
+use Rector\DoctrinePhpDocParser\Contract\Ast\PhpDoc\DoctrineTagNodeInterface;
 use Rector\Exception\NotImplementedException;
+use Rector\NodeTypeResolver\Node\AttributeKey;
 
 /**
  * Parses following ORM annotations:
@@ -63,31 +77,26 @@ final class OrmTagParser
 
         // Property tags
         if ($node instanceof Property) {
-            if ($tag === '@ORM\Column') {
-                return $this->createColumnTagValueNode($node, $annotationContent);
-            }
+            return $this->createPropertyTagValueNode($tag, $node, $annotationContent);
         }
 
-        // @todo
-        throw new NotImplementedException(__METHOD__);
+        throw new NotImplementedException(__METHOD__ . ' - ' . $tag);
     }
 
-    private function createEntityTagValueNode(Class_ $node, string $content): EntityTagValueNode
+    private function createEntityTagValueNode(Class_ $node, string $annotationContent): EntityTagValueNode
     {
         /** @var Entity $entity */
         $entity = $this->nodeAnnotationReader->readDoctrineClassAnnotation($node, Entity::class);
 
-        $itemsOrder = $this->resolveAnnotationItemsOrder($content);
-
-        return new EntityTagValueNode($entity->repositoryClass, $entity->readOnly, $itemsOrder);
+        return new EntityTagValueNode($entity->repositoryClass, $entity->readOnly, $this->resolveAnnotationItemsOrder(
+            $annotationContent
+        ));
     }
 
-    private function createColumnTagValueNode(Property $property, string $content): ColumnTagValueNode
+    private function createColumnTagValueNode(Property $property, string $annotationContent): ColumnTagValueNode
     {
         /** @var Column $column */
         $column = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, Column::class);
-
-        $itemsOrder = $this->resolveAnnotationItemsOrder($content);
 
         return new ColumnTagValueNode(
             $column->name,
@@ -99,8 +108,100 @@ final class OrmTagParser
             $column->nullable,
             $column->options,
             $column->columnDefinition,
-            $itemsOrder
+            $this->resolveAnnotationItemsOrder($annotationContent)
         );
+    }
+
+    private function createManyToManyTagValueNode(Property $property, string $annotationContent): ManyToManyTagValueNode
+    {
+        /** @var ManyToMany $manyToMany */
+        $manyToMany = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, ManyToMany::class);
+
+        return new ManyToManyTagValueNode(
+            $manyToMany->targetEntity,
+            $manyToMany->mappedBy,
+            $manyToMany->inversedBy,
+            $manyToMany->cascade,
+            $manyToMany->fetch,
+            $manyToMany->orphanRemoval,
+            $manyToMany->indexBy,
+            $this->resolveAnnotationItemsOrder($annotationContent),
+            $this->resolveFqnTargetEntity($manyToMany->targetEntity, $property)
+        );
+    }
+
+    private function createManyToOneTagValueNode(Property $property, string $annotationContent): ManyToOneTagValueNode
+    {
+        /** @var ManyToOne $manyToOne */
+        $manyToOne = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, ManyToOne::class);
+
+        return new ManyToOneTagValueNode(
+            $manyToOne->targetEntity,
+            $manyToOne->cascade,
+            $manyToOne->fetch,
+            $manyToOne->inversedBy,
+            $this->resolveAnnotationItemsOrder($annotationContent),
+            $this->resolveFqnTargetEntity($manyToOne->targetEntity, $property)
+        );
+    }
+
+    private function createOneToOneTagValueNode(Property $property, string $annotationContent): OneToOneTagValueNode
+    {
+        /** @var OneToOne $oneToOne */
+        $oneToOne = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, OneToOne::class);
+
+        return new OneToOneTagValueNode(
+            $oneToOne->targetEntity,
+            $oneToOne->mappedBy,
+            $oneToOne->inversedBy,
+            $oneToOne->cascade,
+            $oneToOne->fetch,
+            $oneToOne->orphanRemoval,
+            $this->resolveAnnotationItemsOrder($annotationContent),
+            $this->resolveFqnTargetEntity($oneToOne->targetEntity, $property)
+        );
+    }
+
+    private function createOneToManyTagValueNode(Property $property, string $annotationContent): OneToManyTagValueNode
+    {
+        /** @var OneToMany $oneToMany */
+        $oneToMany = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, OneToMany::class);
+
+        return new OneToManyTagValueNode(
+            $oneToMany->mappedBy,
+            $oneToMany->targetEntity,
+            $oneToMany->cascade,
+            $oneToMany->fetch,
+            $oneToMany->orphanRemoval,
+            $oneToMany->indexBy,
+            $this->resolveAnnotationItemsOrder($annotationContent),
+            $this->resolveFqnTargetEntity($oneToMany->targetEntity, $property)
+        );
+    }
+
+    private function createJoinColumnTagValueNode(Property $property, string $annotationContent): JoinColumnTagValueNode
+    {
+        /** @var JoinColumn $joinColumn */
+        $joinColumn = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, JoinColumn::class);
+
+        return new JoinColumnTagValueNode(
+            $joinColumn->name,
+            $joinColumn->referencedColumnName,
+            $joinColumn->unique,
+            $joinColumn->nullable,
+            $joinColumn->onDelete,
+            $joinColumn->columnDefinition,
+            $joinColumn->fieldName,
+            $this->resolveAnnotationItemsOrder($annotationContent)
+        );
+    }
+
+    private function createOrderByTagValeNode(Property $property): OrderByTagValueNode
+    {
+        /** @var OrderBy $orderBy */
+        $orderBy = $this->nodeAnnotationReader->readDoctrinePropertyAnnotation($property, OrderBy::class);
+
+        return new OrderByTagValueNode($orderBy->value);
     }
 
     /**
@@ -115,5 +216,59 @@ final class OrmTagParser
         }
 
         return $itemsOrder;
+    }
+
+    private function resolveFqnTargetEntity(string $targetEntity, Node $node): string
+    {
+        if (class_exists($targetEntity)) {
+            return $targetEntity;
+        }
+
+        $namespacedTargetEntity = $node->getAttribute(AttributeKey::NAMESPACE_NAME) . '\\' . $targetEntity;
+        if (class_exists($namespacedTargetEntity)) {
+            return $namespacedTargetEntity;
+        }
+
+        // probably tested class
+        return $targetEntity;
+    }
+
+    /**
+     * @return ColumnTagValueNode|JoinColumnTagValueNode|OneToManyTagValueNode|ManyToManyTagValueNode|OneToOneTagValueNode|ManyToOneTagValueNode|OrderByTagValueNode
+     */
+    private function createPropertyTagValueNode(
+        string $tag,
+        Property $property,
+        string $annotationContent
+    ): DoctrineTagNodeInterface {
+        if ($tag === '@ORM\Column') {
+            return $this->createColumnTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\JoinColumn') {
+            return $this->createJoinColumnTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\ManyToMany') {
+            return $this->createManyToManyTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\ManyToOne') {
+            return $this->createManyToOneTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\OneToOne') {
+            return $this->createOneToOneTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\OneToMany') {
+            return $this->createOneToManyTagValueNode($property, $annotationContent);
+        }
+
+        if ($tag === '@ORM\OrderBy') {
+            return $this->createOrderByTagValeNode($property);
+        }
+
+        throw new NotImplementedException(__METHOD__ . ' - ' . $tag);
     }
 }
